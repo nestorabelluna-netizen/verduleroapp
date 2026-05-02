@@ -329,7 +329,7 @@ export default function App() {
             totalTransf={totalTransf} totalTarjeta={totalTarjeta}
             totalCosto={totalCosto} ganancia={ganancia} margenPct={margenPct}
             mermasCount={mermasCount} onLogout={()=>{setMode(null);setLoaded(false);}}/>
-        : <AdminApp products={products} showToast={showToast} toast={toast}
+        : <AdminApp products={products} saveProducts={saveProducts} showToast={showToast} toast={toast}
             onLogout={()=>{setMode(null);setLoaded(false);}}/>
       }
     </>
@@ -766,76 +766,78 @@ function OpMerma({products,mermas,saveMermas,showToast}){
   );
 }
 
+// ── OPERADOR: solo agrega productos (sin costos ni precios) ──────────────────
 function OpPrecios({products,saveProducts,showToast}){
-  const [costo,setCosto]=useState(""); const [margen,setMargen]=useState("40");
-  const [editM,setEditM]=useState(null); const [addM,setAddM]=useState(false);
-  const [nm,setNm]=useState(""); const [un,setUn]=useState("kg"); const [co,setCo]=useState(""); const [pr,setPr]=useState(""); const [st,setSt]=useState("");
-  const cn=parseFloat(costo)||0, mn=parseFloat(margen)||0, sug=cn>0?cn/(1-mn/100):0, gan=sug-cn;
-  const openEdit=p=>{setEditM(p);setNm(p.name);setUn(p.unit);setCo(p.cost);setPr(p.price);setSt(p.stock);};
-  const saveEdit=()=>{saveProducts(products.map(p=>p.id===editM.id?{...p,name:nm,unit:un,cost:parseFloat(co)||0,price:parseFloat(pr)||0,stock:parseFloat(st)||0}:p));setEditM(null);showToast("✅ Actualizado");};
+  const [addM,setAddM]=useState(false);
+  const [nm,setNm]=useState(""); const [un,setUn]=useState("kg"); const [st,setSt]=useState("");
+
   const addProd=()=>{
-    if(!nm||!co||!pr)return;
-    saveProducts([...products,{id:Date.now().toString(),name:nm,unit:un,cost:parseFloat(co)||0,price:parseFloat(pr)||0,stock:parseFloat(st)||10,minStock:3}]);
-    setAddM(false);setNm("");setUn("kg");setCo("");setPr("");setSt("");showToast("✅ Producto agregado");
+    if(!nm) return;
+    saveProducts([...products,{id:Date.now().toString(),name:nm,unit:un,
+      cost:0,price:0,stock:parseFloat(st)||10,minStock:3}]);
+    setAddM(false); setNm(""); setUn("kg"); setSt("");
+    showToast("✅ Producto agregado");
   };
+
   return(
     <div>
-      <div className="sec-title">🏷️ Calculadora de precios</div>
-      <div className="card">
-        <div className="card-title">Precio sugerido</div>
-        <div className="frow"><label className="flbl">Costo de compra ($)</label><input className="finput" type="number" placeholder="$ lo que pagaste" value={costo} onChange={e=>setCosto(e.target.value)}/></div>
-        <div className="frow"><label className="flbl">Margen deseado (%)</label><input className="finput" type="number" placeholder="40" value={margen} onChange={e=>setMargen(e.target.value)}/></div>
-        {cn>0&&(
-          <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:12,padding:14,marginTop:8}}>
-            <div className="line" style={{borderColor:"#1a4a20"}}><span className="line-k">💰 Precio sugerido</span><span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22,color:"#f5e842"}}>{fmtARS(sug)}</span></div>
-            <div className="line" style={{borderColor:"#1a4a20"}}><span className="line-k">Ganancia / unidad</span><span className="line-v">{fmtARS(gan)}</span></div>
-            <div className="line"><span className="line-k">Markup</span><span className="line-v">{fmtPct(cn>0?(gan/cn)*100:0)}</span></div>
-          </div>
-        )}
+      <div className="sec-title">📦 Productos</div>
+
+      {/* Aviso de permisos */}
+      <div style={{background:"#1a2d4a",border:"1px solid #1e3d6a",borderRadius:14,padding:"12px 16px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+        <span style={{fontSize:20}}>🔒</span>
+        <div>
+          <div style={{fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,color:"#64b5f6"}}>Permisos limitados</div>
+          <div style={{fontSize:11,color:"#4a7090",marginTop:2}}>Los precios y costos solo puede modificarlos el Administrador</div>
+        </div>
       </div>
+
+      {/* Botón agregar */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-        <div className="sec-title" style={{margin:0}}>Productos</div>
-        <button className="btn btn-green btn-sm" style={{width:"auto"}} onClick={()=>{setAddM(true);setNm("");setUn("kg");setCo("");setPr("");setSt("");}}>
-          <Ico d={I.plus} size={13}/>Nuevo
+        <div className="sec-title" style={{margin:0}}>Lista de productos</div>
+        <button className="btn btn-green btn-sm" style={{width:"auto"}}
+          onClick={()=>{setAddM(true);setNm("");setUn("kg");setSt("");}}>
+          <Ico d={I.plus} size={13}/>Agregar
         </button>
       </div>
+
+      {/* Lista — solo nombre y unidad, sin costos */}
       <div className="card" style={{padding:"6px 14px"}}>
-        {products.map(p=>{
-          const mg=p.price>0?((p.price-p.cost)/p.price)*100:0;
-          return(
-            <div key={p.id} style={{display:"flex",alignItems:"center",padding:"9px 0",borderBottom:"1px solid #182c1c",gap:7}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,color:"#c0dcc2",fontWeight:500}}>{p.name}</div>
-                <div style={{fontSize:11,color:"#3d6045"}}>C:{fmtARS(p.cost)} → V:{fmtARS(p.price)}/{p.unit}</div>
-              </div>
-              <span className={mg>=30?"tag-g":mg>=15?"tag-y":"tag-r"}>{mg.toFixed(0)}%</span>
-              <button className="btn btn-dim btn-sm btn-ico" onClick={()=>openEdit(p)}><Ico d={I.edit} size={13}/></button>
-              <button className="btn btn-red btn-sm btn-ico" onClick={()=>saveProducts(products.filter(x=>x.id!==p.id))}><Ico d={I.trash} size={13}/></button>
+        {products.map(p=>(
+          <div key={p.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #182c1c",gap:8}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:14,color:"#c0dcc2",fontWeight:500}}>{p.name}</div>
+              <div style={{fontSize:11,color:"#3d6045"}}>Stock: {p.stock} {p.unit} · {fmtARS(p.price)}/{p.unit}</div>
             </div>
-          );
-        })}
-      </div>
-      {editM&&(
-        <div className="overlay" onClick={()=>setEditM(null)}>
-          <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">Editar {editM.name}</div>
-            {[["Nombre",nm,setNm,"text"],["Costo ($)",co,setCo,"number"],["Precio ($)",pr,setPr,"number"],["Stock",st,setSt,"number"]].map(([l,v,s,t])=>(
-              <div key={l} className="frow"><label className="flbl">{l}</label><input className="finput" type={t} value={v} onChange={e=>s(e.target.value)}/></div>
-            ))}
-            <div className="frow"><label className="flbl">Unidad</label><select className="finput" value={un} onChange={e=>setUn(e.target.value)}>{["kg","unid","atado","docena"].map(u=><option key={u} value={u}>{u}</option>)}</select></div>
-            <div style={{display:"flex",gap:8}}><button className="btn btn-dim" onClick={()=>setEditM(null)}>Cancelar</button><button className="btn btn-green" onClick={saveEdit}>Guardar</button></div>
+            <span className="tag-b">{p.unit}</span>
           </div>
-        </div>
-      )}
+        ))}
+        {!products.length&&<div className="empty"><p>Sin productos</p></div>}
+      </div>
+
+      {/* Modal agregar — solo nombre, unidad, stock */}
       {addM&&(
         <div className="overlay" onClick={()=>setAddM(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">Nuevo producto</div>
-            {[["Nombre",nm,setNm,"text","ej: Acelga"],["Costo ($)",co,setCo,"number","$ compra"],["Precio ($)",pr,setPr,"number","$ venta"],["Stock",st,setSt,"number","20"]].map(([l,v,s,t,ph])=>(
-              <div key={l} className="frow"><label className="flbl">{l}</label><input className="finput" type={t} placeholder={ph} value={v} onChange={e=>s(e.target.value)}/></div>
-            ))}
-            <div className="frow"><label className="flbl">Unidad</label><select className="finput" value={un} onChange={e=>setUn(e.target.value)}>{["kg","unid","atado","docena"].map(u=><option key={u} value={u}>{u}</option>)}</select></div>
-            <div style={{display:"flex",gap:8}}><button className="btn btn-dim" onClick={()=>setAddM(false)}>Cancelar</button><button className="btn btn-green" onClick={addProd}>Agregar</button></div>
+            <div className="modal-title">➕ Nuevo producto</div>
+            <div style={{fontSize:11,color:"#4a7050",marginBottom:14,background:"#111f14",padding:"8px 12px",borderRadius:10}}>
+              El Administrador deberá completar el costo y precio de venta.
+            </div>
+            <div className="frow"><label className="flbl">Nombre del producto</label>
+              <input className="finput" type="text" placeholder="ej: Acelga" value={nm} onChange={e=>setNm(e.target.value)}/>
+            </div>
+            <div className="frow"><label className="flbl">Unidad de venta</label>
+              <select className="finput" value={un} onChange={e=>setUn(e.target.value)}>
+                {["kg","unid","atado","docena"].map(u=><option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+            <div className="frow"><label className="flbl">Stock inicial</label>
+              <input className="finput" type="number" placeholder="20" value={st} onChange={e=>setSt(e.target.value)}/>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:4}}>
+              <button className="btn btn-dim" onClick={()=>setAddM(false)}>Cancelar</button>
+              <button className="btn btn-green" onClick={addProd}>Agregar</button>
+            </div>
           </div>
         </div>
       )}
@@ -844,7 +846,7 @@ function OpPrecios({products,saveProducts,showToast}){
 }
 
 // ─── ADMIN APP ────────────────────────────────────────────────────────────────
-function AdminApp({products,showToast,toast,onLogout}){
+function AdminApp({products,saveProducts,showToast,toast,onLogout}){
   const [tab,setTab]=useState("dash");
   const [days,setDays]=useState([]);
   const [allSales,setAllSales]=useState({});
@@ -870,6 +872,7 @@ function AdminApp({products,showToast,toast,onLogout}){
     historia:<AdminHistory days={days} allSales={allSales} allMermas={allMermas} products={products} loading={loading}/>,
     prods:   <AdminProds   days={days} allSales={allSales} products={products} loading={loading}/>,
     mermas:  <AdminMermas  days={days} allMermas={allMermas} products={products} loading={loading}/>,
+    precios: <AdminPrecios products={products} saveProducts={saveProducts} showToast={showToast}/>,
   };
 
   return(
@@ -890,12 +893,182 @@ function AdminApp({products,showToast,toast,onLogout}){
       {toast&&<div className="toast">{toast}</div>}
       <nav className="nav">
         {[{id:"dash",lbl:"Dashboard",icon:I.chart},{id:"historia",lbl:"Historial",icon:I.cal},
-          {id:"prods",lbl:"Productos",icon:I.pkg},{id:"mermas",lbl:"Mermas",icon:I.alert}].map(t=>(
+          {id:"prods",lbl:"Ventas",icon:I.pkg},{id:"mermas",lbl:"Mermas",icon:I.alert},
+          {id:"precios",lbl:"Precios",icon:I.tag}].map(t=>(
           <button key={t.id} className={`nav-btn ${tab===t.id?"active":""}`} onClick={()=>setTab(t.id)}>
             <Ico d={t.icon} size={20}/>{t.lbl}
           </button>
         ))}
       </nav>
+    </div>
+  );
+}
+
+// ── ADMIN: Gestión completa de precios ───────────────────────────────────────
+function AdminPrecios({products,saveProducts,showToast}){
+  const [costo,setCosto]=useState("");
+  const [margen,setMargen]=useState("40");
+  const [editM,setEditM]=useState(null);
+  const [addM,setAddM]=useState(false);
+  const [nm,setNm]=useState(""); const [un,setUn]=useState("kg");
+  const [co,setCo]=useState(""); const [pr,setPr]=useState(""); const [st,setSt]=useState("");
+
+  const cn=parseFloat(costo)||0, mn=parseFloat(margen)||0;
+  const sug=cn>0?cn/(1-mn/100):0, gan=sug-cn;
+
+  const openEdit=p=>{setEditM(p);setNm(p.name);setUn(p.unit);setCo(p.cost);setPr(p.price);setSt(p.stock);};
+  const saveEdit=()=>{
+    saveProducts(products.map(p=>p.id===editM.id
+      ?{...p,name:nm,unit:un,cost:parseFloat(co)||0,price:parseFloat(pr)||0,stock:parseFloat(st)||0}:p));
+    setEditM(null); showToast("✅ Producto actualizado");
+  };
+  const addProd=()=>{
+    if(!nm||!co||!pr) return;
+    saveProducts([...products,{id:Date.now().toString(),name:nm,unit:un,
+      cost:parseFloat(co)||0,price:parseFloat(pr)||0,stock:parseFloat(st)||10,minStock:3}]);
+    setAddM(false); setNm(""); setUn("kg"); setCo(""); setPr(""); setSt("");
+    showToast("✅ Producto agregado");
+  };
+  // Aplicar margen global a todos los productos
+  const applyMargenGlobal=()=>{
+    if(!mn) return;
+    const updated=products.map(p=>({...p,price:p.cost>0?Math.round(p.cost/(1-mn/100)):p.price}));
+    saveProducts(updated);
+    showToast(`✅ Margen ${mn}% aplicado a todos`);
+  };
+
+  return(
+    <div>
+      <div className="sec-title">🏷️ Gestión de precios</div>
+
+      {/* Calculadora */}
+      <div className="card">
+        <div className="card-title">Calculadora de precio sugerido</div>
+        <div className="frow"><label className="flbl">Costo de compra ($)</label>
+          <input className="finput" type="number" placeholder="$ lo que pagaste" value={costo} onChange={e=>setCosto(e.target.value)}/>
+        </div>
+        <div className="frow"><label className="flbl">Margen de ganancia deseado (%)</label>
+          <input className="finput" type="number" placeholder="40" value={margen} onChange={e=>setMargen(e.target.value)}/>
+        </div>
+        {cn>0&&(
+          <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:12,padding:14,marginTop:4}}>
+            <div className="line" style={{borderColor:"#1a4a20"}}>
+              <span className="line-k">💰 Precio sugerido</span>
+              <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22,color:"#f5e842"}}>{fmtARS(sug)}</span>
+            </div>
+            <div className="line" style={{borderColor:"#1a4a20"}}><span className="line-k">Ganancia / unidad</span><span className="line-v">{fmtARS(gan)}</span></div>
+            <div className="line"><span className="line-k">Markup sobre costo</span><span className="line-v">{fmtPct(cn>0?(gan/cn)*100:0)}</span></div>
+          </div>
+        )}
+      </div>
+
+      {/* Margen global */}
+      <div className="card">
+        <div className="card-title">Aplicar margen a todos los productos</div>
+        <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
+          <div style={{flex:1}}>
+            <label className="flbl">% de margen global</label>
+            <input className="finput" type="number" placeholder="ej: 40" value={margen} onChange={e=>setMargen(e.target.value)}/>
+          </div>
+          <button className="btn btn-blue btn-sm" style={{width:"auto",padding:"10px 16px",flexShrink:0}} onClick={applyMargenGlobal}>
+            Aplicar a todos
+          </button>
+        </div>
+        <div style={{fontSize:11,color:"#4a7090",marginTop:8}}>
+          Recalcula el precio de venta de cada producto según su costo y el margen ingresado.
+        </div>
+      </div>
+
+      {/* Lista de productos — edición completa */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div className="sec-title" style={{margin:0}}>Productos ({products.length})</div>
+        <button className="btn btn-green btn-sm" style={{width:"auto"}}
+          onClick={()=>{setAddM(true);setNm("");setUn("kg");setCo("");setPr("");setSt("");}}>
+          <Ico d={I.plus} size={13}/>Nuevo
+        </button>
+      </div>
+
+      <div className="card" style={{padding:"6px 14px"}}>
+        {products.map(p=>{
+          const mg=p.price>0?((p.price-p.cost)/p.price)*100:0;
+          const sinPrecio=p.price===0||p.cost===0;
+          return(
+            <div key={p.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #182c1c",gap:7}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,color:"#c0dcc2",fontWeight:500,display:"flex",alignItems:"center",gap:6}}>
+                  {p.name}
+                  {sinPrecio&&<span className="tag-r" style={{fontSize:9}}>sin precio</span>}
+                </div>
+                <div style={{fontSize:11,color:"#3d6045"}}>
+                  C:{fmtARS(p.cost)} → V:{fmtARS(p.price)}/{p.unit} · Stock:{p.stock}
+                </div>
+              </div>
+              <span className={sinPrecio?"tag-r":mg>=30?"tag-g":mg>=15?"tag-y":"tag-r"}>
+                {sinPrecio?"—":mg.toFixed(0)+"%"}
+              </span>
+              <button className="btn btn-dim btn-sm btn-ico" onClick={()=>openEdit(p)}><Ico d={I.edit} size={13}/></button>
+              <button className="btn btn-red btn-sm btn-ico" onClick={()=>{saveProducts(products.filter(x=>x.id!==p.id));showToast("🗑️ Eliminado");}}><Ico d={I.trash} size={13}/></button>
+            </div>
+          );
+        })}
+        {!products.length&&<div className="empty"><p>Sin productos</p></div>}
+      </div>
+
+      {/* Modal editar */}
+      {editM&&(
+        <div className="overlay" onClick={()=>setEditM(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-title">✏️ Editar {editM.name}</div>
+            {[["Nombre",nm,setNm,"text",""],["Costo de compra ($)",co,setCo,"number","$ costo"],
+              ["Precio de venta ($)",pr,setPr,"number","$ venta"],["Stock actual",st,setSt,"number",""]].map(([l,v,s,t,ph])=>(
+              <div key={l} className="frow"><label className="flbl">{l}</label>
+                <input className="finput" type={t} placeholder={ph} value={v} onChange={e=>s(e.target.value)}/>
+              </div>
+            ))}
+            <div className="frow"><label className="flbl">Unidad</label>
+              <select className="finput" value={un} onChange={e=>setUn(e.target.value)}>
+                {["kg","unid","atado","docena"].map(u=><option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+            {co&&pr&&(
+              <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:10,padding:10,marginBottom:12}}>
+                <div style={{fontSize:11,color:"#4a7050"}}>Margen resultante</div>
+                <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:18,color:"#9ef09a"}}>
+                  {parseFloat(pr)>0?fmtPct(((parseFloat(pr)-parseFloat(co))/parseFloat(pr))*100):"—"}
+                </div>
+              </div>
+            )}
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-dim" onClick={()=>setEditM(null)}>Cancelar</button>
+              <button className="btn btn-green" onClick={saveEdit}>Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal agregar */}
+      {addM&&(
+        <div className="overlay" onClick={()=>setAddM(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-title">➕ Nuevo producto</div>
+            {[["Nombre",nm,setNm,"text","ej: Acelga"],["Costo de compra ($)",co,setCo,"number","$ costo"],
+              ["Precio de venta ($)",pr,setPr,"number","$ venta"],["Stock inicial",st,setSt,"number","20"]].map(([l,v,s,t,ph])=>(
+              <div key={l} className="frow"><label className="flbl">{l}</label>
+                <input className="finput" type={t} placeholder={ph} value={v} onChange={e=>s(e.target.value)}/>
+              </div>
+            ))}
+            <div className="frow"><label className="flbl">Unidad</label>
+              <select className="finput" value={un} onChange={e=>setUn(e.target.value)}>
+                {["kg","unid","atado","docena"].map(u=><option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-dim" onClick={()=>setAddM(false)}>Cancelar</button>
+              <button className="btn btn-green" onClick={addProd}>Agregar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
