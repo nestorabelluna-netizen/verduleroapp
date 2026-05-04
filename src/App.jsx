@@ -30,6 +30,7 @@ const DEFAULT_PRODUCTS = [
 
 const ADMIN_PIN = "2024";
 const OP_PIN    = "1234";
+const getSettings = () => db.get("settings") || {opPin:OP_PIN, adminPin:ADMIN_PIN, waPhone:""};
 
 // ─── ICON ─────────────────────────────────────────────────────────────────────
 const Ico = ({d,size=20}) => (
@@ -351,7 +352,8 @@ function LoginScreen({onLogin}){
     const next=pin+d; setPin(next); setErr(false);
     if(next.length===4){
       setTimeout(()=>{
-        if(next===(isAdm?ADMIN_PIN:OP_PIN)) onLogin(sel);
+        const cfg = getSettings();
+        if(next===(isAdm ? cfg.adminPin : cfg.opPin)) onLogin(sel);
         else{ setErr(true); setShake(true); setTimeout(()=>setShake(false),400); setPin(""); }
       },150);
     }
@@ -510,7 +512,7 @@ function OperadorApp({products,sales,mermas,saveProducts,saveSales,saveMermas,
   const [tab,setTab]=useState("home");
   const tabs={
     home:   <OpHome sales={sales} products={products} totalVentas={totalVentas} ganancia={ganancia} margenPct={margenPct} mermasCount={mermasCount} totalEfectivo={totalEfectivo} totalTransf={totalTransf} totalTarjeta={totalTarjeta}/>,
-    ventas: <OpVentas products={products} sales={sales} saveSales={saveSales} showToast={showToast}/>,
+    ventas: <OpVentas products={products} sales={sales} saveSales={saveSales} saveProducts={saveProducts} showToast={showToast}/>,
     caja:   <OpCaja sales={sales} totalVentas={totalVentas} totalEfectivo={totalEfectivo} totalTransf={totalTransf} totalTarjeta={totalTarjeta} ganancia={ganancia} margenPct={margenPct} totalCosto={totalCosto} showToast={showToast}/>,
     merma:  <OpMerma products={products} mermas={mermas} saveMermas={saveMermas} showToast={showToast}/>,
     precios:<OpPrecios products={products} saveProducts={saveProducts} showToast={showToast}/>,
@@ -576,65 +578,84 @@ function OpHome({sales,products,totalVentas,ganancia,margenPct,mermasCount,total
   );
 }
 
-function OpVentas({products,sales,saveSales,showToast}){
-  const [cart,setCart]       = useState({});
-  const [pay,setPay]         = useState("efectivo");
-  const [hist,setHist]       = useState(false);
-  // Modal de balanza
-  const [selProd,setSelProd] = useState(null); // producto seleccionado
-  const [pesoInput,setPesoInput] = useState(""); // valor ingresado desde balanza
+function OpVentas({products,sales,saveSales,saveProducts,showToast}){
+  const [cart,setCart]         = useState({}); // {pid: qty_kg}
+  const [pay,setPay]           = useState("efectivo");
+  const [hist,setHist]         = useState(false);
+  const [selProd,setSelProd]   = useState(null);
+  const [montoInput,setMontoInput] = useState(""); // el operador ingresa $ monto
 
   const items = Object.entries(cart).filter(([,q])=>q>0);
   const total = items.reduce((a,[pid,qty])=>{
-    const p=products.find(p=>p.id===pid); return a+(p?p.price*qty:0);
+    const p=products.find(p=>p.id===pid);
+    return a+(p ? p.price*qty : 0);
   },0);
 
-  // Al tocar un producto abre el modal de balanza
-  const openBalanza = p => {
-    setSelProd(p);
-    setPesoInput("");
-  };
+  // Peso calculado desde monto ingresado
+  const pesoCalculado = selProd && montoInput
+    ? (parseFloat(montoInput)||0) / selProd.price
+    : 0;
 
-  // Confirmar el peso ingresado y agregar al carrito
-  const confirmarPeso = () => {
-    const peso = parseFloat(pesoInput);
-    if(!peso || peso<=0 || !selProd) return;
-    setCart(c=>({...c,[selProd.id]:(parseFloat(c[selProd.id]||0)+peso)}));
-    setSelProd(null);
-    setPesoInput("");
+  const openModal = p => { setSelProd(p); setMontoInput(""); };
+
+  const confirmarMonto = () => {
+    if(!pesoCalculado || pesoCalculado<=0 || !selProd) return;
+    setCart(c=>({...c,[selProd.id]: parseFloat(((c[selProd.id]||0)+pesoCalculado).toFixed(4))}));
+    setSelProd(null); setMontoInput("");
   };
 
   const removeItem = pid => { const c={...cart}; delete c[pid]; setCart(c); };
 
   const confirm = () => {
     if(!items.length) return;
-    saveSales([...sales,...items.map(([pid,qty])=>{
+    // Guardar ventas
+    const newSales = items.map(([pid,qty])=>{
       const p=products.find(p=>p.id===pid);
       return {id:Date.now()+Math.random(),productId:pid,name:p.name,qty,
         price:p.price,total:p.price*qty,pay,
         time:new Date().toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"})};
-    })]);
-    setCart({}); showToast(`✅ Venta registrada — ${fmtARS(total)}`);
+    });
+    saveSales([...sales,...newSales]);
+    // Descontar stock de cada producto vendido
+    const updatedProds = products.map(p=>{
+      const vendido = cart[p.id];
+      if(!vendido) return p;
+      return {...p, stock: Math.max(0, parseFloat((p.stock - vendido).toFixed(4)))};
+    });
+    saveProducts(updatedProds);
+    setCart({});
+    showToast(`✅ Venta registrada — ${fmtARS(total)}`);
   };
 
   return(
     <div>
       <div className="sec-title">🛒 Registrar venta</div>
 
+      {/* Instrucción */}
+      <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:12,
+        padding:"10px 14px",marginBottom:12,fontSize:12,color:"#6ab870"}}>
+        📦 Tocá el producto → ingresá el <b>monto</b> que muestra la balanza → el sistema calcula el peso automáticamente
+      </div>
+
       {/* GRILLA DE PRODUCTOS */}
       <div className="card">
-        <div className="card-title">Tocá el producto para ingresar el peso</div>
+        <div className="card-title">Seleccioná el producto</div>
         <div className="prod-grid">
           {products.filter(p=>p.price>0).map(p=>(
-            <button key={p.id}
-              className={`prod-btn ${cart[p.id]?"sel":""}`}
-              onClick={()=>openBalanza(p)}>
+            <button key={p.id} className={`prod-btn ${cart[p.id]?"sel":""}`}
+              onClick={()=>openModal(p)}>
               {cart[p.id]>0&&(
                 <div className="prod-badge">{parseFloat(cart[p.id]).toFixed(2)}</div>
               )}
               <div className="prod-nm">{p.name}</div>
               <div className="prod-pr">{fmtARS(p.price)}</div>
               <div className="prod-un">/{p.unit}</div>
+              {p.stock<=5&&p.stock>0&&(
+                <div style={{fontSize:9,color:"#f5c842",marginTop:2}}>Stock bajo</div>
+              )}
+              {p.stock<=0&&(
+                <div style={{fontSize:9,color:"#f56b6b",marginTop:2}}>Sin stock</div>
+              )}
             </button>
           ))}
         </div>
@@ -646,17 +667,19 @@ function OpVentas({products,sales,saveSales,showToast}){
           <div className="card-title">Carrito</div>
           {items.map(([pid,qty])=>{
             const p=products.find(p=>p.id===pid);
+            const montoItem = p.price*qty;
             return(
               <div key={pid} className="cart-row">
                 <div style={{flex:1}}>
                   <div className="cart-nm">{p.name}</div>
-                  <div style={{fontSize:11,color:"#4a7050"}}>{qty.toFixed(3)} {p.unit} × {fmtARS(p.price)}</div>
+                  <div style={{fontSize:11,color:"#4a7050"}}>
+                    {qty.toFixed(3)} {p.unit} × {fmtARS(p.price)}
+                  </div>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <div className="cart-tot">{fmtARS(p.price*qty)}</div>
-                  {/* Tocar el total para corregir peso */}
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <div className="cart-tot">{fmtARS(montoItem)}</div>
                   <button className="btn btn-dim btn-sm btn-ico"
-                    onClick={()=>{ setSelProd(p); setPesoInput(qty.toString()); }}>
+                    onClick={()=>{setSelProd(p);setMontoInput(montoItem.toString());}}>
                     <Ico d={I.edit} size={13}/>
                   </button>
                   <button className="btn btn-red btn-sm btn-ico" onClick={()=>removeItem(pid)}>
@@ -666,13 +689,11 @@ function OpVentas({products,sales,saveSales,showToast}){
               </div>
             );
           })}
-          {/* Total */}
           <div style={{display:"flex",justifyContent:"space-between",padding:"12px 0 4px",
             borderTop:"1px solid #1e3522",marginTop:4}}>
             <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,color:"#e4ede5"}}>TOTAL</span>
             <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22,color:"#9ef09a"}}>{fmtARS(total)}</span>
           </div>
-          {/* Medio de pago */}
           <div style={{marginTop:10}}>
             <div className="flbl">Medio de pago</div>
             <div className="pay-grid">
@@ -691,92 +712,90 @@ function OpVentas({products,sales,saveSales,showToast}){
         Ver ventas del día ({sales.length})
       </button>
 
-      {/* ── MODAL BALANZA ── */}
+      {/* ── MODAL MONTO/BALANZA ── */}
       {selProd&&(
         <div className="overlay" onClick={()=>setSelProd(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
 
-            {/* Cabecera del producto */}
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20,
-              background:"#111f14",borderRadius:14,padding:"14px 16px",
-              border:"1px solid #1a3020"}}>
-              <div style={{flex:1}}>
+            {/* Info producto */}
+            <div style={{background:"#111f14",border:"1px solid #1a3020",borderRadius:14,
+              padding:"14px 16px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
                 <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:18,color:"#9ef09a"}}>
                   {selProd.name}
                 </div>
-                <div style={{fontSize:13,color:"#4a7050",marginTop:2}}>
-                  {fmtARS(selProd.price)} por {selProd.unit}
+                <div style={{fontSize:12,color:"#4a7050",marginTop:2}}>
+                  Precio: {fmtARS(selProd.price)} / {selProd.unit} · Stock: {parseFloat(selProd.stock).toFixed(2)} {selProd.unit}
                 </div>
               </div>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontSize:10,color:"#4a7050",textTransform:"uppercase",letterSpacing:1}}>Precio</div>
-                <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22,color:"#f5e842"}}>
-                  {fmtARS(selProd.price)}
-                </div>
+              <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22,color:"#f5e842"}}>
+                {fmtARS(selProd.price)}
               </div>
             </div>
 
             {/* Instrucción */}
-            <div style={{fontSize:12,color:"rgba(255,255,255,.45)",textAlign:"center",
-              marginBottom:16,letterSpacing:.5}}>
-              Ingresá el peso que muestra la balanza ({selProd.unit})
+            <div style={{fontSize:12,color:"rgba(255,255,255,.5)",textAlign:"center",marginBottom:14}}>
+              Ingresá el <b style={{color:"#9ef09a"}}>monto $</b> que cobró la balanza
             </div>
 
-            {/* Display del peso */}
+            {/* Display monto → peso calculado */}
             <div style={{background:"#060e07",border:"2px solid #1e3522",borderRadius:16,
-              padding:"16px 20px",marginBottom:16,textAlign:"center",position:"relative"}}>
-              <div style={{fontSize:11,color:"#4a7050",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>
-                Peso ingresado
-              </div>
-              <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:40,
-                color: pesoInput ? "#9ef09a" : "rgba(255,255,255,.2)",letterSpacing:2}}>
-                {pesoInput || "0.000"}
-              </div>
-              <div style={{fontSize:12,color:"#4a7050",marginTop:2}}>{selProd.unit}</div>
-              {pesoInput&&(
-                <div style={{marginTop:10,padding:"8px 14px",background:"#0f2e13",
-                  borderRadius:10,display:"inline-block"}}>
-                  <span style={{fontSize:12,color:"#4a7050"}}>Total: </span>
-                  <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:18,color:"#f5e842"}}>
-                    {fmtARS(parseFloat(pesoInput)*selProd.price)}
-                  </span>
+              padding:"14px 16px",marginBottom:14,textAlign:"center"}}>
+              {/* Monto ingresado */}
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:10,color:"#4a7050",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>
+                  Monto cobrado
                 </div>
+                <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:38,
+                  color:montoInput?"#f5e842":"rgba(255,255,255,.2)"}}>
+                  {montoInput ? "$"+parseInt(montoInput||0).toLocaleString("es-AR") : "$0"}
+                </div>
+              </div>
+              {/* Separador → */}
+              {montoInput&&(
+                <>
+                  <div style={{fontSize:18,color:"#4a7050",margin:"4px 0"}}>↓</div>
+                  {/* Peso calculado */}
+                  <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:12,padding:"10px 14px"}}>
+                    <div style={{fontSize:10,color:"#4a7050",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>
+                      Peso calculado
+                    </div>
+                    <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:28,color:"#9ef09a"}}>
+                      {pesoCalculado.toFixed(3)} {selProd.unit}
+                    </div>
+                    <div style={{fontSize:10,color:"#4a7050",marginTop:2}}>
+                      {fmtARS(montoInput)} ÷ {fmtARS(selProd.price)} = {pesoCalculado.toFixed(3)} {selProd.unit}
+                    </div>
+                  </div>
+                </>
               )}
             </div>
 
-            {/* Teclado numérico con decimales */}
+            {/* Teclado numérico — solo enteros para monto */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
-              {["1","2","3","4","5","6","7","8","9",".","0","⌫"].map((d,i)=>(
+              {["1","2","3","4","5","6","7","8","9","000","0","⌫"].map((d,i)=>(
                 <button key={i} style={{
-                  background:"rgba(255,255,255,.07)",
-                  border:"1.5px solid rgba(255,255,255,.12)",
-                  borderRadius:14,height:58,
-                  fontFamily:"Syne,sans-serif",fontSize:22,fontWeight:700,color:"#ffffff",
-                  cursor:"pointer",transition:"all .1s",display:"flex",
-                  flexDirection:"column",alignItems:"center",justifyContent:"center"
+                  background:"rgba(255,255,255,.07)",border:"1.5px solid rgba(255,255,255,.12)",
+                  borderRadius:14,height:56,fontFamily:"Syne,sans-serif",fontSize:d==="000"?16:22,
+                  fontWeight:700,color:"#ffffff",cursor:"pointer",transition:"all .1s"
                 }}
                 onClick={()=>{
-                  if(d==="⌫"){ setPesoInput(p=>p.slice(0,-1)); }
-                  else if(d==="." && pesoInput.includes(".")) return;
-                  else { setPesoInput(p=>{
-                    // máximo 3 decimales
-                    if(p.includes(".") && p.split(".")[1]?.length>=3) return p;
-                    return p+d;
-                  }); }
+                  if(d==="⌫") setMontoInput(p=>p.slice(0,-1));
+                  else if(d==="000") setMontoInput(p=>p?(p+"000"):"");
+                  else setMontoInput(p=>p.length>=8?p:p+d);
                 }}>
                   {d}
                 </button>
               ))}
             </div>
 
-            {/* Botones de acción */}
+            {/* Botones */}
             <div style={{display:"flex",gap:8}}>
               <button className="btn btn-dim" onClick={()=>setSelProd(null)}>Cancelar</button>
               <button className="btn btn-green"
-                style={{opacity:pesoInput&&parseFloat(pesoInput)>0?1:.4}}
-                onClick={confirmarPeso}>
-                <Ico d={I.check} size={17}/>
-                Agregar al carrito
+                style={{opacity:pesoCalculado>0?1:.35}}
+                onClick={confirmarMonto}>
+                <Ico d={I.check} size={17}/>Agregar al carrito
               </button>
             </div>
 
@@ -793,7 +812,9 @@ function OpVentas({products,sales,saveSales,showToast}){
               :[...sales].reverse().map(s=>(
                 <div key={s.id} style={{padding:"9px 0",borderBottom:"1px solid #182c1c"}}>
                   <div style={{display:"flex",justifyContent:"space-between"}}>
-                    <span style={{fontSize:14,color:"#c0dcc2"}}>{s.name} — {parseFloat(s.qty).toFixed(3)} {products.find(p=>p.id===s.productId)?.unit||""}</span>
+                    <span style={{fontSize:14,color:"#c0dcc2"}}>
+                      {s.name} — {parseFloat(s.qty).toFixed(3)} {products.find(p=>p.id===s.productId)?.unit||""}
+                    </span>
                     <span style={{fontFamily:"Syne,sans-serif",fontWeight:700,color:"#9ef09a"}}>{fmtARS(s.total)}</span>
                   </div>
                   <div style={{fontSize:11,color:"#3d6045",marginTop:2}}>{s.time} · {s.pay}</div>
@@ -812,6 +833,8 @@ function OpCaja({sales,totalVentas,totalEfectivo,totalTransf,totalTarjeta,gananc
   const gastN=parseFloat(gastos)||0, efN=parseFloat(efFis)||0;
   const neto=ganancia-gastN, diff=efN-totalEfectivo, cnt=sales.length, tkt=cnt>0?totalVentas/cnt:0;
   const sendWA=()=>{
+    const cfg = getSettings();
+    const phone = cfg.waPhone || "";
     const fecha=new Date().toLocaleDateString("es-AR",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
     const txt=encodeURIComponent(`🥬 *CIERRE DE CAJA*\n📅 ${fecha}\n\n`+
       `💰 *Ventas totales:* ${fmtARS(totalVentas)}\n`+
@@ -821,7 +844,8 @@ function OpCaja({sales,totalVentas,totalEfectivo,totalTransf,totalTarjeta,gananc
       `\n✅ *Ganancia neta: ${fmtARS(neto)}*\n📈 Margen: ${fmtPct(margenPct)}\n🧾 Transacciones: ${cnt}\n💵 Ticket prom.: ${fmtARS(tkt)}\n`+
       (efFis?`\n🔎 Efectivo físico: ${fmtARS(efN)} (${diff>=0?"+":""}${fmtARS(diff)})\n`:"")+
       `_VerduleroApp Pro_`);
-    window.open(`https://wa.me/?text=${txt}`,"_blank");
+    const url = phone ? `https://wa.me/${phone}?text=${txt}` : `https://wa.me/?text=${txt}`;
+    window.open(url,"_blank");
   };
   return(
     <div>
@@ -1021,6 +1045,7 @@ function AdminApp({products,saveProducts,showToast,toast,onLogout}){
     prods:   <AdminProds   days={days} allSales={allSales} products={products} loading={loading}/>,
     mermas:  <AdminMermas  days={days} allMermas={allMermas} products={products} loading={loading}/>,
     precios: <AdminPrecios products={products} saveProducts={saveProducts} showToast={showToast}/>,
+    config:  <AdminConfig showToast={showToast}/>,
   };
 
   return(
@@ -1041,8 +1066,8 @@ function AdminApp({products,saveProducts,showToast,toast,onLogout}){
       {toast&&<div className="toast">{toast}</div>}
       <nav className="nav">
         {[{id:"dash",lbl:"Dashboard",icon:I.chart},{id:"historia",lbl:"Historial",icon:I.cal},
-          {id:"prods",lbl:"Ventas",icon:I.pkg},{id:"mermas",lbl:"Mermas",icon:I.alert},
-          {id:"precios",lbl:"Precios",icon:I.tag}].map(t=>(
+          {id:"prods",lbl:"Ventas",icon:I.pkg},{id:"precios",lbl:"Precios",icon:I.tag},
+          {id:"config",lbl:"Config",icon:["M12 15a3 3 0 100-6 3 3 0 000 6z","M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"]}].map(t=>(
           <button key={t.id} className={`nav-btn ${tab===t.id?"active":""}`} onClick={()=>setTab(t.id)}>
             <Ico d={t.icon} size={20}/>{t.lbl}
           </button>
@@ -1217,6 +1242,84 @@ function AdminPrecios({products,saveProducts,showToast}){
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── ADMIN: Configuración — PINs y WhatsApp ───────────────────────────────────
+function AdminConfig({showToast}){
+  const cfg     = getSettings();
+  const [opPin,setOpPin]       = useState(cfg.opPin);
+  const [adminPin,setAdminPin] = useState(cfg.adminPin);
+  const [waPhone,setWaPhone]   = useState(cfg.waPhone);
+  const [showPins,setShowPins] = useState(false);
+
+  const guardar = () => {
+    if(opPin.length!==4||!/^\d{4}$/.test(opPin)){
+      showToast("❌ El PIN del operador debe tener 4 dígitos"); return;
+    }
+    if(adminPin.length!==4||!/^\d{4}$/.test(adminPin)){
+      showToast("❌ El PIN de admin debe tener 4 dígitos"); return;
+    }
+    if(opPin===adminPin){
+      showToast("❌ Los dos PINs no pueden ser iguales"); return;
+    }
+    db.set("settings",{opPin,adminPin,waPhone});
+    showToast("✅ Configuración guardada");
+  };
+
+  return(
+    <div>
+      <div className="sec-title">⚙️ Configuración</div>
+
+      {/* PINs */}
+      <div className="card">
+        <div className="card-title">🔒 Claves de acceso (PIN)</div>
+
+        <div style={{background:"#1a2d4a",border:"1px solid #1e3d6a",borderRadius:12,
+          padding:"10px 14px",marginBottom:14,fontSize:12,color:"#64b5f6"}}>
+          ℹ️ Los PINs deben tener exactamente 4 dígitos numéricos. El cambio se aplica al próximo ingreso.
+        </div>
+
+        <div className="frow">
+          <label className="flbl">🛒 PIN Operador (actual: {showPins?cfg.opPin:"••••"})</label>
+          <input className="finput" type="number" maxLength={4} placeholder="4 dígitos"
+            value={opPin} onChange={e=>setOpPin(e.target.value.slice(0,4))}/>
+        </div>
+        <div className="frow">
+          <label className="flbl">📊 PIN Administrador (actual: {showPins?cfg.adminPin:"••••"})</label>
+          <input className="finput" type="number" maxLength={4} placeholder="4 dígitos"
+            value={adminPin} onChange={e=>setAdminPin(e.target.value.slice(0,4))}/>
+        </div>
+        <button className="btn btn-dim btn-sm" style={{width:"auto",marginBottom:12}}
+          onClick={()=>setShowPins(s=>!s)}>
+          {showPins?"🙈 Ocultar PINs actuales":"👁️ Ver PINs actuales"}
+        </button>
+      </div>
+
+      {/* WhatsApp */}
+      <div className="card">
+        <div className="card-title">📲 Número de WhatsApp para reportes</div>
+        <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:12,
+          padding:"10px 14px",marginBottom:14,fontSize:12,color:"#6ab870"}}>
+          Ingresá el número con código de país, sin + ni espacios.<br/>
+          Ejemplo: <b>5491123456789</b> (Argentina, código 54)
+        </div>
+        <div className="frow">
+          <label className="flbl">Número de WhatsApp</label>
+          <input className="finput" type="tel" placeholder="ej: 5491123456789"
+            value={waPhone} onChange={e=>setWaPhone(e.target.value.replace(/\D/g,""))}/>
+        </div>
+        {waPhone&&(
+          <div style={{fontSize:11,color:"#4a7050",marginBottom:8}}>
+            Los reportes se enviarán a: wa.me/{waPhone}
+          </div>
+        )}
+      </div>
+
+      <button className="btn btn-green" onClick={guardar}>
+        <Ico d={I.check} size={17}/>Guardar configuración
+      </button>
     </div>
   );
 }
