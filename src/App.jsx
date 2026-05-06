@@ -1086,31 +1086,54 @@ function OpPrecios({products,saveProducts,showToast}){
 
 // ─── ADMIN APP ────────────────────────────────────────────────────────────────
 function AdminApp({products,saveProducts,showToast,toast,onLogout}){
-  const [tab,setTab]=useState("dash");
-  const [days,setDays]=useState([]);
-  const [allSales,setAllSales]=useState({});
-  const [allMermas,setAllMermas]=useState({});
-  const [loading,setLoading]=useState(true);
+  const [tab,setTab]         = useState("dash");
+  const [days,setDays]       = useState([]);
+  const [allSales,setAllSales]   = useState({});
+  const [allMermas,setAllMermas] = useState({});
+  const [loading,setLoading]     = useState(true);
+  const [lastSync,setLastSync]   = useState(null); // hora del último sync
+  const [syncing,setSyncing]     = useState(false); // spinner en el botón
 
-  const load=useCallback(async()=>{
-    setLoading(true);
-    // Bajar datos actualizados de la nube
-    const synced = await db.pull();
-    const idx=db.get("days_index")||[];
-    const allDays=[...new Set([...idx,todayStr()])].sort();
+  // Función de carga — silent=true no muestra spinner (para el autosync)
+  const load = useCallback(async(silent=false)=>{
+    if(!silent) setLoading(true);
+    setSyncing(true);
+    const synced = await db.pull(); // baja nube → localStorage
+    const idx    = db.get("days_index")||[];
+    const allDays= [...new Set([...idx,todayStr()])].sort();
     setDays(allDays);
     const sm={},mm={};
-    allDays.forEach(d=>{sm[d]=db.get("sales_"+d)||[];mm[d]=db.get("mermas_"+d)||[];});
-    setAllSales(sm);setAllMermas(mm);setLoading(false);
+    allDays.forEach(d=>{
+      sm[d]=db.get("sales_"+d)||[];
+      mm[d]=db.get("mermas_"+d)||[];
+    });
+    setAllSales(sm);
+    setAllMermas(mm);
+    if(!silent) setLoading(false);
+    setSyncing(false);
+    if(synced) setLastSync(new Date());
     return synced;
   },[]);
 
-  useEffect(()=>load(),[load]);
+  // Carga inicial
+  useEffect(()=>{ load(); },[load]);
 
-  const refresh=async()=>{
-    const ok = await load();
-    showToast(ok?"🔄 Sincronizado con la nube":"🔄 Actualizado (sin nube configurada)");
+  // Auto-sincronización cada 30 segundos en background
+  useEffect(()=>{
+    const cfg = db.getCfg();
+    if(!cfg.binId||!cfg.apiKey) return; // solo si hay nube configurada
+    const interval = setInterval(()=>load(true), 30000);
+    return ()=>clearInterval(interval); // limpiar al desmontar
+  },[load]);
+
+  const refresh = async()=>{
+    const ok = await load(false);
+    showToast(ok?"✅ Sincronizado con la nube":"⚠️ Sin nube — configurá JSONBin en Config");
   };
+
+  const fmtHora = d => d
+    ? d.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})
+    : "—";
 
   const tabs={
     dash:     <AdminDash     days={days} allSales={allSales} allMermas={allMermas} products={products} loading={loading}/>,
@@ -1124,27 +1147,49 @@ function AdminApp({products,saveProducts,showToast,toast,onLogout}){
     <div className="app">
       <header className="header">
         <div className="header-row">
-          <div><div className="header-title">📊 Panel Admin</div><div className="header-sub">VerduleroApp Pro · Vista gerencial</div></div>
+          <div>
+            <div className="header-title">📊 Panel Admin</div>
+            {/* Indicador de último sync */}
+            <div style={{display:"flex",alignItems:"center",gap:5,marginTop:2}}>
+              <div style={{width:6,height:6,borderRadius:"50%",
+                background:lastSync?"#4caf50":"#f5c842",
+                boxShadow:lastSync?"0 0 6px #4caf50":"0 0 6px #f5c842",
+                animation:"blink 2s ease-in-out infinite"}}/>
+              <div style={{fontSize:9,color:lastSync?"#4a7050":"#6a6030"}}>
+                {lastSync
+                  ? `Última sync: ${fmtHora(lastSync)}`
+                  : "Sin sincronización — tocá Sync"}
+              </div>
+            </div>
+          </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <button className="btn btn-blue btn-sm" style={{width:"auto",padding:"6px 12px",gap:5}} onClick={refresh}>
-              <Ico d={I.sync} size={13}/><span style={{fontSize:11}}>Sync</span>
+            <button className="btn btn-blue btn-sm"
+              style={{width:"auto",padding:"6px 12px",gap:5,opacity:syncing?.7:1}}
+              onClick={refresh} disabled={syncing}>
+              <Ico d={I.sync} size={13}/>
+              <span style={{fontSize:11}}>{syncing?"…":"Sync"}</span>
             </button>
             <span className="mode-badge badge-admin">Admin</span>
-            <button className="logout-btn" onClick={onLogout}><Ico d={I.logout} size={18}/></button>
+            <button className="logout-btn" onClick={onLogout}>
+              <Ico d={I.logout} size={18}/>
+            </button>
           </div>
         </div>
       </header>
+
       <main className="content fade">{tabs[tab]}</main>
       {toast&&<div className="toast">{toast}</div>}
+
       <nav className="nav">
         {[
-          {id:"dash",     lbl:"Hoy",      icon:I.chart},
-          {id:"reportes", lbl:"Reportes", icon:I.trend},
-          {id:"historia", lbl:"Historial",icon:I.cal},
-          {id:"precios",  lbl:"Precios",  icon:I.tag},
-          {id:"config",   lbl:"Config",   icon:["M12 15a3 3 0 100-6 3 3 0 000 6z","M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"]},
+          {id:"dash",     lbl:"Hoy",       icon:I.chart},
+          {id:"reportes", lbl:"Reportes",  icon:I.trend},
+          {id:"historia", lbl:"Historial", icon:I.cal},
+          {id:"precios",  lbl:"Precios",   icon:I.tag},
+          {id:"config",   lbl:"Config",    icon:["M12 15a3 3 0 100-6 3 3 0 000 6z","M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"]},
         ].map(t=>(
-          <button key={t.id} className={`nav-btn ${tab===t.id?"active":""}`} onClick={()=>setTab(t.id)}>
+          <button key={t.id} className={`nav-btn ${tab===t.id?"active":""}`}
+            onClick={()=>setTab(t.id)}>
             <Ico d={t.icon} size={20}/>{t.lbl}
           </button>
         ))}
