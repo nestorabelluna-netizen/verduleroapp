@@ -1153,7 +1153,289 @@ function AdminApp({products,saveProducts,showToast,toast,onLogout}){
   );
 }
 
-// ── ADMIN: Gestión completa de precios ───────────────────────────────────────
+// ── ADMIN: Reportes semanales y mensuales ────────────────────────────────────
+function AdminReportes({days, allSales, allMermas, products, loading}){
+  const [periodo, setPeriodo] = useState("semana"); // "semana" | "mes"
+
+  // Calcular rango de fechas
+  const hoy    = new Date();
+  const ranges = useMemo(()=>{
+    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    // Semana: últimos 7 días
+    const semDesde = new Date(hoy); semDesde.setDate(hoy.getDate()-6);
+    // Mes actual: del 1 al hoy
+    const mesDesde = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    // Mes anterior
+    const mesAntDesde = new Date(hoy.getFullYear(), hoy.getMonth()-1, 1);
+    const mesAntHasta = new Date(hoy.getFullYear(), hoy.getMonth(), 0);
+    return {
+      semDesde: fmt(semDesde),
+      semHasta: fmt(hoy),
+      mesDesde: fmt(mesDesde),
+      mesHasta: fmt(hoy),
+      mesAntDesde: fmt(mesAntDesde),
+      mesAntHasta: fmt(mesAntHasta),
+    };
+  },[]);
+
+  // Filtrar días del período seleccionado
+  const diasPeriodo = useMemo(()=>{
+    const desde = periodo==="semana" ? ranges.semDesde : ranges.mesDesde;
+    const hasta = periodo==="semana" ? ranges.semHasta : ranges.mesHasta;
+    return days.filter(d => d>=desde && d<=hasta);
+  },[days, periodo, ranges]);
+
+  // Días del mes anterior (para comparar)
+  const diasMesAnt = useMemo(()=>
+    days.filter(d => d>=ranges.mesAntDesde && d<=ranges.mesAntHasta)
+  ,[days, ranges]);
+
+  // Calcular stats de un conjunto de días
+  const calcStats = useCallback((diasList)=>{
+    let ventas=0, costo=0, txCount=0, mermaVal=0;
+    const porDia={}, porProd={}, porPago={efectivo:0,transferencia:0,tarjeta:0};
+    diasList.forEach(d=>{
+      const sv = allSales[d]||[];
+      const sm = allMermas[d]||[];
+      let diaVentas=0;
+      sv.forEach(s=>{
+        ventas+=s.total; txCount++;
+        porPago[s.pay]=(porPago[s.pay]||0)+s.total;
+        const p=products.find(p=>p.id===s.productId);
+        if(p) costo+=p.cost*s.qty;
+        diaVentas+=s.total;
+        if(!porProd[s.productId]) porProd[s.productId]={name:s.name,total:0,qty:0};
+        porProd[s.productId].total+=s.total;
+        porProd[s.productId].qty+=s.qty;
+      });
+      sm.forEach(m=>{
+        const p=products.find(p=>p.id===m.productId);
+        if(p) mermaVal+=p.cost*m.qty;
+      });
+      if(diaVentas>0) porDia[d]=diaVentas;
+    });
+    const ganancia=ventas-costo;
+    const margen=ventas>0?(ganancia/ventas)*100:0;
+    const tkt=txCount>0?ventas/txCount:0;
+    const diasActivos=Object.keys(porDia).length;
+    const promDia=diasActivos>0?ventas/diasActivos:0;
+    const topProds=Object.values(porProd).sort((a,b)=>b.total-a.total).slice(0,5);
+    const mejorDia=Object.entries(porDia).sort((a,b)=>b[1]-a[1])[0];
+    return {ventas,ganancia,margen,txCount,tkt,mermaVal,costo,
+            diasActivos,promDia,topProds,mejorDia,porPago,porDia};
+  },[allSales,allMermas,products]);
+
+  const stats    = useMemo(()=>calcStats(diasPeriodo),[diasPeriodo,calcStats]);
+  const statsAnt = useMemo(()=>calcStats(diasMesAnt),[diasMesAnt,calcStats]);
+
+  // Variación respecto al período anterior (solo en vista mensual)
+  const varPct = (actual,ant) => ant>0?((actual-ant)/ant)*100:null;
+  const fmtVar = v => v===null?"—":(v>=0?"+":"")+v.toFixed(1)+"%";
+  const colVar = v => v===null?"#4a7050":v>=0?"#9ef09a":"#f56b6b";
+
+  // Barras del período
+  const maxBar = Math.max(...Object.values(stats.porDia),1);
+
+  // Enviar por WhatsApp
+  const sendWA = () => {
+    const cfg = getSettings();
+    const phone = cfg.waPhone||"";
+    const titulo = periodo==="semana"
+      ? `📊 *REPORTE SEMANAL* (${fmtDate(ranges.semDesde)} → ${fmtDate(ranges.semHasta)})`
+      : `📊 *REPORTE MENSUAL* — ${hoy.toLocaleDateString("es-AR",{month:"long",year:"numeric"})}`;
+    const varVentas = periodo==="mes"?` (${fmtVar(varPct(stats.ventas,statsAnt.ventas))}) vs mes ant.`:"";
+    const lineas = [
+      titulo,"",
+      `💰 *Ventas totales:* ${fmtARS(stats.ventas)}${varVentas}`,
+      `✅ *Ganancia neta:* ${fmtARS(stats.ganancia)} — ${fmtPct(stats.margen)} margen`,
+      `📦 Costo mercadería: ${fmtARS(stats.costo)}`,
+      `🚨 Pérdida por merma: ${fmtARS(stats.mermaVal)}`,
+      "",
+      `🧾 Transacciones: ${stats.txCount}`,
+      `🎟️ Ticket promedio: ${fmtARS(stats.tkt)}`,
+      `📅 Días activos: ${stats.diasActivos}`,
+      `📈 Promedio por día: ${fmtARS(stats.promDia)}`,
+      "",
+      `💳 Por método de pago:`,
+      `   💵 Efectivo: ${fmtARS(stats.porPago.efectivo)}`,
+      `   📲 Transferencia: ${fmtARS(stats.porPago.transferencia)}`,
+      `   💳 Tarjeta/QR: ${fmtARS(stats.porPago.tarjeta)}`,
+      "",
+      `🏆 Top productos:`,
+      ...stats.topProds.map((p,i)=>`   ${i+1}. ${p.name}: ${fmtARS(p.total)}`),
+      stats.mejorDia?`\n📆 Mejor día: ${fmtDate(stats.mejorDia[0])} — ${fmtARS(stats.mejorDia[1])}`:"",
+      "",
+      "_VerduleroApp Pro_"
+    ].filter(l=>l!==undefined);
+    const txt = encodeURIComponent(lineas.join("\n"));
+    const url = phone?`https://wa.me/${phone}?text=${txt}`:`https://wa.me/?text=${txt}`;
+    window.open(url,"_blank");
+  };
+
+  if(loading) return <div className="empty"><p>Cargando…</p></div>;
+
+  return(
+    <div>
+      {/* Selector de período */}
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        {[["semana","📅 Esta semana"],["mes","🗓️ Este mes"]].map(([v,l])=>(
+          <button key={v}
+            onClick={()=>setPeriodo(v)}
+            style={{flex:1,padding:"10px 0",borderRadius:12,border:"none",cursor:"pointer",
+              fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13,transition:"all .15s",
+              background: periodo===v?"#9ef09a":"#111f14",
+              color: periodo===v?"#0a1a0d":"#4a7050",
+              boxShadow: periodo===v?"0 2px 12px rgba(158,240,154,.3)":"none"}}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {/* Rango de fechas */}
+      <div style={{textAlign:"center",fontSize:11,color:"#4a7050",marginBottom:14}}>
+        {periodo==="semana"
+          ? `${fmtDate(ranges.semDesde)} → ${fmtDate(ranges.semHasta)}`
+          : `${fmtDate(ranges.mesDesde)} → ${fmtDate(ranges.mesHasta)}`}
+        {" · "}{stats.diasActivos} días con ventas
+      </div>
+
+      {/* KPIs principales */}
+      <div className="stats-grid">
+        <div className="stat">
+          <div className="stat-lbl">Ventas del período</div>
+          <div className="stat-val" style={{fontSize:19}}>{fmtARS(stats.ventas)}</div>
+          {periodo==="mes"&&statsAnt.ventas>0&&(
+            <div className="stat-sub" style={{color:colVar(varPct(stats.ventas,statsAnt.ventas))}}>
+              {fmtVar(varPct(stats.ventas,statsAnt.ventas))} vs mes ant.
+            </div>
+          )}
+        </div>
+        <div className={`stat ${stats.margen>=30?"":stats.margen>=15?"warn":"bad"}`}>
+          <div className="stat-lbl">Ganancia neta</div>
+          <div className="stat-val" style={{fontSize:19}}>{fmtARS(stats.ganancia)}</div>
+          <div className="stat-sub">{fmtPct(stats.margen)} margen</div>
+        </div>
+        <div className="stat">
+          <div className="stat-lbl">Promedio por día</div>
+          <div className="stat-val" style={{fontSize:18}}>{fmtARS(stats.promDia)}</div>
+          <div className="stat-sub">{stats.diasActivos} días activos</div>
+        </div>
+        <div className="stat bad">
+          <div className="stat-lbl">Pérdida merma</div>
+          <div className="stat-val" style={{fontSize:18}}>{fmtARS(stats.mermaVal)}</div>
+          <div className="stat-sub">a costo</div>
+        </div>
+      </div>
+
+      {/* Gráfico de barras del período */}
+      {Object.keys(stats.porDia).length>0&&(
+        <div className="card">
+          <div className="card-title">Ventas por día</div>
+          <div className="bar-wrap" style={{height:90,alignItems:"flex-end",gap:3}}>
+            {Object.entries(stats.porDia).sort(([a],[b])=>a.localeCompare(b)).map(([d,v])=>(
+              <div key={d} className="bar-col">
+                <div className="bar-val">{fmtARS(v).replace("$","")}</div>
+                <div className="bar" style={{height:`${Math.max((v/maxBar)*72,4)}px`}}/>
+                <div className="bar-lbl">{fmtDate(d).slice(0,5)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Cobros por método */}
+      <div className="card">
+        <div className="card-title">Cobros por método de pago</div>
+        {[["💵 Efectivo","efectivo"],["📲 Transferencia","transferencia"],["💳 Tarjeta/QR","tarjeta"]].map(([l,k])=>(
+          <div key={k} className="line">
+            <span className="line-k">{l}</span>
+            <div style={{textAlign:"right"}}>
+              <span className="line-v">{fmtARS(stats.porPago[k])}</span>
+              {stats.ventas>0&&(
+                <div style={{fontSize:10,color:"#4a7050"}}>
+                  {((stats.porPago[k]/stats.ventas)*100).toFixed(0)}%
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Top productos */}
+      {stats.topProds.length>0&&(
+        <div className="card">
+          <div className="card-title">🏆 Top productos del período</div>
+          {stats.topProds.map((p,i)=>(
+            <div key={i} className="line">
+              <span className="line-k">
+                <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,color:"#2a5a30",marginRight:8}}>#{i+1}</span>
+                {p.name}
+              </span>
+              <span className="line-v">{fmtARS(p.total)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Mejor día */}
+      {stats.mejorDia&&(
+        <div className="card" style={{background:"linear-gradient(135deg,#0f2e13,#162b1a)",border:"1px solid #1a4a20"}}>
+          <div className="card-title">🌟 Mejor día del período</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:16,color:"#c0dcc2"}}>
+                {new Date(stats.mejorDia[0]+"T12:00:00").toLocaleDateString("es-AR",{weekday:"long",day:"numeric",month:"long"})}
+              </div>
+              <div style={{fontSize:11,color:"#4a7050",marginTop:2}}>
+                {(allSales[stats.mejorDia[0]]||[]).length} transacciones
+              </div>
+            </div>
+            <div style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:26,color:"#f5e842"}}>
+              {fmtARS(stats.mejorDia[1])}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Comparación mensual */}
+      {periodo==="mes"&&statsAnt.ventas>0&&(
+        <div className="card">
+          <div className="card-title">📊 Comparación con mes anterior</div>
+          {[
+            ["Ventas",stats.ventas,statsAnt.ventas],
+            ["Ganancia",stats.ganancia,statsAnt.ganancia],
+            ["Transacciones",stats.txCount,statsAnt.txCount],
+          ].map(([l,act,ant])=>(
+            <div key={l} className="line">
+              <span className="line-k">{l}</span>
+              <div style={{textAlign:"right"}}>
+                <span className="line-v">{typeof act==="number"&&act>999?fmtARS(act):act}</span>
+                <div style={{fontSize:10,color:colVar(varPct(act,ant)),marginTop:1}}>
+                  {fmtVar(varPct(act,ant))} vs mes ant.
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Datos vacíos */}
+      {stats.diasActivos===0&&(
+        <div className="empty">
+          <Ico d={I.chart} size={38}/>
+          <p>Sin ventas registradas<br/>en este período</p>
+        </div>
+      )}
+
+      {/* Botón WhatsApp */}
+      <button className="btn btn-wa" onClick={sendWA} style={{marginTop:4}}>
+        <Ico d={I.wa} size={19}/>
+        Enviar reporte por WhatsApp
+      </button>
+
+    </div>
+  );
+}
 function AdminPrecios({products,saveProducts,showToast}){
   const [costo,setCosto]=useState("");
   const [margen,setMargen]=useState("40");
