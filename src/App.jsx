@@ -1,17 +1,66 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 
-// ─── STORAGE (localStorage compartido) ───────────────────────────────────────
+// ─── STORAGE + SINCRONIZACIÓN EN NUBE ────────────────────────────────────────
+const CLOUD_URL = "https://api.jsonbin.io/v3/b";
+
 const db = {
-  get(key)      { try { const v=localStorage.getItem(key); return v?JSON.parse(v):null; } catch{return null;} },
-  set(key,val)  { try { localStorage.setItem(key,JSON.stringify(val)); } catch{} },
-  keys(prefix)  { try { return Object.keys(localStorage).filter(k=>k.startsWith(prefix)); } catch{return[];} },
+  // Local (rápido)
+  get(key)     { try{ const v=localStorage.getItem(key); return v?JSON.parse(v):null; }catch{return null;} },
+  set(key,val) { try{ localStorage.setItem(key,JSON.stringify(val)); }catch{} },
+
+  // Config de sincronización
+  getCfg() { return db.get("syncCfg")||{binId:"",apiKey:""}; },
+
+  // Subir un dato a la nube (en background, sin bloquear)
+  async push(key, val) {
+    const {binId,apiKey}=db.getCfg();
+    if(!binId||!apiKey) return;
+    try {
+      const r  = await fetch(`${CLOUD_URL}/${binId}/latest`,{headers:{"X-Master-Key":apiKey,"X-Bin-Meta":"false"}});
+      const cur = r.ok ? await r.json() : {};
+      cur[key] = val;
+      await fetch(`${CLOUD_URL}/${binId}`,{method:"PUT",
+        headers:{"Content-Type":"application/json","X-Master-Key":apiKey},
+        body:JSON.stringify(cur)});
+    } catch(e){ console.warn("Sync push error:",e); }
+  },
+
+  // Bajar TODOS los datos de la nube y guardarlos en localStorage
+  async pull() {
+    const {binId,apiKey}=db.getCfg();
+    if(!binId||!apiKey) return false;
+    try {
+      const r = await fetch(`${CLOUD_URL}/${binId}/latest`,{headers:{"X-Master-Key":apiKey,"X-Bin-Meta":"false"}});
+      if(!r.ok) return false;
+      const data = await r.json();
+      // Guardar todo en localStorage
+      Object.entries(data).forEach(([k,v])=>db.set(k,v));
+      return true;
+    } catch(e){ console.warn("Sync pull error:",e); return false; }
+  },
+
+  // Crear el bin inicial en JSONBin
+  async initBin(apiKey) {
+    try {
+      const r = await fetch(`${CLOUD_URL}`,{method:"POST",
+        headers:{"Content-Type":"application/json","X-Master-Key":apiKey,"X-Bin-Name":"VerduleroApp"},
+        body:JSON.stringify({_init:true})});
+      if(!r.ok) return null;
+      const d = await r.json();
+      return d.metadata?.id || null;
+    } catch{ return null; }
+  }
 };
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-const todayStr = () => new Date().toISOString().slice(0,10);
-const fmtARS   = n  => "$"+Math.round(n||0).toLocaleString("es-AR");
-const fmtPct   = n  => (n||0).toFixed(1)+"%";
-const fmtDate  = s  => { const [y,m,d]=s.split("-"); return `${d}/${m}/${y}`; };
+// Fecha local (no UTC) para evitar desfasaje horario en Argentina
+const todayStr = () => {
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+const fmtARS  = n => "$"+Math.round(n||0).toLocaleString("es-AR");
+const fmtPct  = n => (n||0).toFixed(1)+"%";
+const fmtDate = s => { const [y,m,d]=s.split("-"); return `${d}/${m}/${y}`; };
 
 const DEFAULT_PRODUCTS = [
   {id:"1", name:"Tomate",    unit:"kg",   cost:800,  price:1400,stock:20},
@@ -275,33 +324,45 @@ select.finput option{background:#0e1f11;}
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [mode,setMode]       = useState(null);
+  const [mode,setMode]         = useState(null);
   const [products,setProducts] = useState([]);
-  const [sales,setSales]     = useState([]);
-  const [mermas,setMermas]   = useState([]);
-  const [toast,setToast]     = useState(null);
-  const [loaded,setLoaded]   = useState(false);
+  const [sales,setSales]       = useState([]);
+  const [mermas,setMermas]     = useState([]);
+  const [toast,setToast]       = useState(null);
+  const [loaded,setLoaded]     = useState(false);
 
   useEffect(()=>{
     if(!mode) return;
-    setProducts(db.get("products")||DEFAULT_PRODUCTS);
-    setSales(db.get("sales_"+todayStr())||[]);
-    setMermas(db.get("mermas_"+todayStr())||[]);
-    setLoaded(true);
+    (async()=>{
+      // Intentar bajar datos de la nube primero (sincronización)
+      await db.pull();
+      setProducts(db.get("products")||DEFAULT_PRODUCTS);
+      setSales(db.get("sales_"+todayStr())||[]);
+      setMermas(db.get("mermas_"+todayStr())||[]);
+      setLoaded(true);
+    })();
   },[mode]);
 
   const saveProducts = useCallback(p=>{
-    setProducts(p); db.set("products",p);
+    setProducts(p);
+    db.set("products",p);
+    db.push("products",p); // sync nube background
   },[]);
 
   const saveSales = useCallback(s=>{
-    setSales(s); db.set("sales_"+todayStr(),s);
-    const idx = db.get("days_index")||[];
-    if(!idx.includes(todayStr())) db.set("days_index",[...idx,todayStr()].sort());
+    setSales(s);
+    db.set("sales_"+todayStr(),s);
+    const idx=[...new Set([...(db.get("days_index")||[]),todayStr()])].sort();
+    db.set("days_index",idx);
+    // Sync nube en background
+    db.push("sales_"+todayStr(),s);
+    db.push("days_index",idx);
   },[]);
 
   const saveMermas = useCallback(m=>{
-    setMermas(m); db.set("mermas_"+todayStr(),m);
+    setMermas(m);
+    db.set("mermas_"+todayStr(),m);
+    db.push("mermas_"+todayStr(),m); // sync nube background
   },[]);
 
   const showToast = useCallback(msg=>{
@@ -318,7 +379,13 @@ export default function App() {
   const mermasCount   = mermas.reduce((a,m)=>a+m.qty,0);
 
   if(!mode) return <LoginScreen onLogin={m=>{setMode(m);setLoaded(false);}}/>;
-  if(!loaded) return <div style={{height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0a1a0d"}}><div style={{fontSize:40}}>🥬</div></div>;
+  if(!loaded) return(
+    <div style={{height:"100vh",display:"flex",flexDirection:"column",alignItems:"center",
+      justifyContent:"center",background:"#0a1a0d",gap:16}}>
+      <div style={{fontSize:44}}>🥬</div>
+      <div style={{fontSize:13,color:"#4a7050"}}>Sincronizando datos…</div>
+    </div>
+  );
 
   return (
     <>
@@ -1025,19 +1092,25 @@ function AdminApp({products,saveProducts,showToast,toast,onLogout}){
   const [allMermas,setAllMermas]=useState({});
   const [loading,setLoading]=useState(true);
 
-  const load=useCallback(()=>{
+  const load=useCallback(async()=>{
     setLoading(true);
+    // Bajar datos actualizados de la nube
+    const synced = await db.pull();
     const idx=db.get("days_index")||[];
     const allDays=[...new Set([...idx,todayStr()])].sort();
     setDays(allDays);
     const sm={},mm={};
     allDays.forEach(d=>{sm[d]=db.get("sales_"+d)||[];mm[d]=db.get("mermas_"+d)||[];});
     setAllSales(sm);setAllMermas(mm);setLoading(false);
+    return synced;
   },[]);
 
   useEffect(()=>load(),[load]);
 
-  const refresh=()=>{load();showToast("🔄 Datos actualizados");};
+  const refresh=async()=>{
+    const ok = await load();
+    showToast(ok?"🔄 Sincronizado con la nube":"🔄 Actualizado (sin nube configurada)");
+  };
 
   const tabs={
     dash:    <AdminDash    days={days} allSales={allSales} allMermas={allMermas} products={products} loading={loading}/>,
@@ -1246,79 +1319,176 @@ function AdminPrecios({products,saveProducts,showToast}){
   );
 }
 
-// ── ADMIN: Configuración — PINs y WhatsApp ───────────────────────────────────
+// ── ADMIN: Configuración ─────────────────────────────────────────────────────
 function AdminConfig({showToast}){
-  const cfg     = getSettings();
-  const [opPin,setOpPin]       = useState(cfg.opPin);
-  const [adminPin,setAdminPin] = useState(cfg.adminPin);
-  const [waPhone,setWaPhone]   = useState(cfg.waPhone);
+  const cfg      = db.getCfg();
+  const stg      = getSettings();
+  const [binId,setBinId]       = useState(cfg.binId);
+  const [apiKey,setApiKey]     = useState(cfg.apiKey);
+  const [opPin,setOpPin]       = useState(stg.opPin);
+  const [adminPin,setAdminPin] = useState(stg.adminPin);
+  const [waPhone,setWaPhone]   = useState(stg.waPhone);
   const [showPins,setShowPins] = useState(false);
+  const [testing,setTesting]   = useState(false);
+  const [syncOk,setSyncOk]     = useState(null); // null | true | false
+  const [creating,setCreating] = useState(false);
 
-  const guardar = () => {
+  // Probar conexión con el bin
+  const testSync = async () => {
+    if(!binId||!apiKey){ showToast("❌ Ingresá el Bin ID y la API Key"); return; }
+    setTesting(true); setSyncOk(null);
+    db.set("syncCfg",{binId,apiKey});
+    const ok = await db.pull();
+    setSyncOk(ok); setTesting(false);
+    showToast(ok?"✅ Conexión exitosa — datos sincronizados":"❌ Error de conexión — verificá los datos");
+  };
+
+  // Crear bin automáticamente con la API key
+  const crearBin = async () => {
+    if(!apiKey){ showToast("❌ Primero ingresá la API Key (Master Key)"); return; }
+    setCreating(true);
+    const newId = await db.initBin(apiKey);
+    setCreating(false);
+    if(newId){ setBinId(newId); showToast("✅ Bin creado: "+newId); }
+    else showToast("❌ No se pudo crear el bin — verificá la API Key");
+  };
+
+  const guardarSync = () => {
+    db.set("syncCfg",{binId,apiKey});
+    showToast("✅ Configuración de nube guardada");
+  };
+
+  const guardarAcceso = () => {
     if(opPin.length!==4||!/^\d{4}$/.test(opPin)){
-      showToast("❌ El PIN del operador debe tener 4 dígitos"); return;
+      showToast("❌ PIN operador: exactamente 4 dígitos"); return;
     }
     if(adminPin.length!==4||!/^\d{4}$/.test(adminPin)){
-      showToast("❌ El PIN de admin debe tener 4 dígitos"); return;
+      showToast("❌ PIN admin: exactamente 4 dígitos"); return;
     }
-    if(opPin===adminPin){
-      showToast("❌ Los dos PINs no pueden ser iguales"); return;
-    }
+    if(opPin===adminPin){ showToast("❌ Los PINs no pueden ser iguales"); return; }
     db.set("settings",{opPin,adminPin,waPhone});
-    showToast("✅ Configuración guardada");
+    db.push("settings",{opPin,adminPin,waPhone});
+    showToast("✅ Claves y WhatsApp guardados");
   };
 
   return(
     <div>
       <div className="sec-title">⚙️ Configuración</div>
 
-      {/* PINs */}
+      {/* ── SINCRONIZACIÓN EN NUBE ── */}
       <div className="card">
-        <div className="card-title">🔒 Claves de acceso (PIN)</div>
+        <div className="card-title">☁️ Sincronización entre dispositivos</div>
 
-        <div style={{background:"#1a2d4a",border:"1px solid #1e3d6a",borderRadius:12,
-          padding:"10px 14px",marginBottom:14,fontSize:12,color:"#64b5f6"}}>
-          ℹ️ Los PINs deben tener exactamente 4 dígitos numéricos. El cambio se aplica al próximo ingreso.
+        {/* Estado actual */}
+        <div style={{
+          background: syncOk===true?"#0f2e13":syncOk===false?"#2e0808":"#111f14",
+          border:`1px solid ${syncOk===true?"#1a4a20":syncOk===false?"#4a1a1a":"#1a3020"}`,
+          borderRadius:12,padding:"10px 14px",marginBottom:14,
+          display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:20}}>{syncOk===true?"🟢":syncOk===false?"🔴":"☁️"}</div>
+          <div>
+            <div style={{fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,
+              color:syncOk===true?"#9ef09a":syncOk===false?"#f56b6b":"#64b5f6"}}>
+              {syncOk===true?"Conectado a la nube":syncOk===false?"Sin conexión":"Sin configurar"}
+            </div>
+            <div style={{fontSize:11,color:"#4a7090",marginTop:1}}>
+              {binId?`Bin: ${binId}`:"Configurá JSONBin para ver datos de todos los dispositivos"}
+            </div>
+          </div>
+        </div>
+
+        {/* Guía paso a paso */}
+        <div style={{background:"#0a1e3a",border:"1px solid #1e3d6a",borderRadius:12,
+          padding:"12px 14px",marginBottom:14}}>
+          <div style={{fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,
+            color:"#64b5f6",marginBottom:8}}>📋 Cómo configurar (gratis, 3 pasos)</div>
+          {[
+            ["1","Entrá a jsonbin.io y creá una cuenta gratuita"],
+            ["2","En el panel, copiá tu Master Key (ícono de llave 🔑)"],
+            ["3","Pegá la key abajo y tocá 'Crear Bin' — listo"],
+          ].map(([n,t])=>(
+            <div key={n} style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}>
+              <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:13,
+                color:"#1976d2",minWidth:18}}>{n}.</span>
+              <span style={{fontSize:11,color:"#90b4d8",lineHeight:1.4}}>{t}</span>
+            </div>
+          ))}
         </div>
 
         <div className="frow">
-          <label className="flbl">🛒 PIN Operador (actual: {showPins?cfg.opPin:"••••"})</label>
-          <input className="finput" type="number" maxLength={4} placeholder="4 dígitos"
-            value={opPin} onChange={e=>setOpPin(e.target.value.slice(0,4))}/>
+          <label className="flbl">Master Key (API Key de JSONBin)</label>
+          <input className="finput" type="password" placeholder="$2a$10$..."
+            value={apiKey} onChange={e=>setApiKey(e.target.value)}/>
         </div>
         <div className="frow">
-          <label className="flbl">📊 PIN Administrador (actual: {showPins?cfg.adminPin:"••••"})</label>
-          <input className="finput" type="number" maxLength={4} placeholder="4 dígitos"
-            value={adminPin} onChange={e=>setAdminPin(e.target.value.slice(0,4))}/>
+          <label className="flbl">Bin ID (se genera automáticamente)</label>
+          <input className="finput" type="text" placeholder="Se completa al crear el bin"
+            value={binId} onChange={e=>setBinId(e.target.value)}/>
         </div>
-        <button className="btn btn-dim btn-sm" style={{width:"auto",marginBottom:12}}
-          onClick={()=>setShowPins(s=>!s)}>
-          {showPins?"🙈 Ocultar PINs actuales":"👁️ Ver PINs actuales"}
+
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <button className="btn btn-blue btn-sm" style={{flex:1}}
+            onClick={crearBin} disabled={creating}>
+            {creating?"Creando…":"☁️ Crear Bin"}
+          </button>
+          <button className="btn btn-dim btn-sm" style={{flex:1}}
+            onClick={testSync} disabled={testing}>
+            {testing?"Probando…":"🔌 Probar conexión"}
+          </button>
+        </div>
+        <button className="btn btn-green" onClick={guardarSync}>
+          <Ico d={I.check} size={17}/>Guardar configuración de nube
         </button>
-      </div>
 
-      {/* WhatsApp */}
-      <div className="card">
-        <div className="card-title">📲 Número de WhatsApp para reportes</div>
-        <div style={{background:"#0f2e13",border:"1px solid #1a4a20",borderRadius:12,
-          padding:"10px 14px",marginBottom:14,fontSize:12,color:"#6ab870"}}>
-          Ingresá el número con código de país, sin + ni espacios.<br/>
-          Ejemplo: <b>5491123456789</b> (Argentina, código 54)
-        </div>
-        <div className="frow">
-          <label className="flbl">Número de WhatsApp</label>
-          <input className="finput" type="tel" placeholder="ej: 5491123456789"
-            value={waPhone} onChange={e=>setWaPhone(e.target.value.replace(/\D/g,""))}/>
-        </div>
-        {waPhone&&(
-          <div style={{fontSize:11,color:"#4a7050",marginBottom:8}}>
-            Los reportes se enviarán a: wa.me/{waPhone}
+        {binId&&apiKey&&(
+          <div style={{marginTop:10,background:"#0f2e13",border:"1px solid #1a4a20",
+            borderRadius:10,padding:"10px 14px",fontSize:11,color:"#6ab870"}}>
+            ✅ <b>Esta misma API Key y Bin ID</b> deben configurarse en todos los dispositivos 
+            (el del operador y el del admin) para que los datos se sincronicen.
           </div>
         )}
       </div>
 
-      <button className="btn btn-green" onClick={guardar}>
-        <Ico d={I.check} size={17}/>Guardar configuración
+      {/* ── CLAVES DE ACCESO ── */}
+      <div className="card">
+        <div className="card-title">🔒 Claves de acceso (PIN 4 dígitos)</div>
+        <div className="frow">
+          <label className="flbl">🛒 PIN Operador {showPins?`(actual: ${stg.opPin})`:""}</label>
+          <input className="finput" type={showPins?"text":"password"} maxLength={4}
+            placeholder="4 dígitos" value={opPin}
+            onChange={e=>setOpPin(e.target.value.replace(/\D/g,"").slice(0,4))}/>
+        </div>
+        <div className="frow">
+          <label className="flbl">📊 PIN Administrador {showPins?`(actual: ${stg.adminPin})`:""}</label>
+          <input className="finput" type={showPins?"text":"password"} maxLength={4}
+            placeholder="4 dígitos" value={adminPin}
+            onChange={e=>setAdminPin(e.target.value.replace(/\D/g,"").slice(0,4))}/>
+        </div>
+        <button className="btn btn-dim btn-sm" style={{width:"auto",marginBottom:12}}
+          onClick={()=>setShowPins(s=>!s)}>
+          {showPins?"🙈 Ocultar":"👁️ Ver PINs actuales"}
+        </button>
+      </div>
+
+      {/* ── WHATSAPP ── */}
+      <div className="card">
+        <div className="card-title">📲 WhatsApp para reportes</div>
+        <div style={{fontSize:11,color:"#4a7050",marginBottom:10}}>
+          Número con código de país, sin + ni espacios.<br/>
+          Ejemplo Argentina: <b style={{color:"#9ef09a"}}>5491123456789</b>
+        </div>
+        <div className="frow">
+          <label className="flbl">Número de WhatsApp</label>
+          <input className="finput" type="tel" placeholder="5491123456789"
+            value={waPhone} onChange={e=>setWaPhone(e.target.value.replace(/\D/g,""))}/>
+        </div>
+        {waPhone&&<div style={{fontSize:11,color:"#4a7050",marginBottom:8}}>
+          Reportes → wa.me/{waPhone}
+        </div>}
+      </div>
+
+      <button className="btn btn-green" onClick={guardarAcceso}>
+        <Ico d={I.check} size={17}/>Guardar PINs y WhatsApp
       </button>
     </div>
   );
