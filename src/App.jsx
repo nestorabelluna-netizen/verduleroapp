@@ -365,6 +365,15 @@ export default function App() {
     db.push("mermas_"+todayStr(),m); // sync nube background
   },[]);
 
+  // syncAll: baja nube → actualiza localStorage → actualiza TODOS los estados React
+  const syncAll = useCallback(async()=>{
+    const synced = await db.pull();
+    setProducts(db.get("products")||DEFAULT_PRODUCTS);
+    setSales(db.get("sales_"+todayStr())||[]);
+    setMermas(db.get("mermas_"+todayStr())||[]);
+    return synced;
+  },[]);
+
   const showToast = useCallback(msg=>{
     setToast(msg); setTimeout(()=>setToast(null),2200);
   },[]);
