@@ -406,7 +406,9 @@ export default function App() {
             totalTransf={totalTransf} totalTarjeta={totalTarjeta}
             totalCosto={totalCosto} ganancia={ganancia} margenPct={margenPct}
             mermasCount={mermasCount} onLogout={()=>{setMode(null);setLoaded(false);}}/>
-        : <AdminApp products={products} saveProducts={saveProducts} showToast={showToast} toast={toast}
+        : <AdminApp products={products} saveProducts={saveProducts}
+            syncAll={syncAll}
+            showToast={showToast} toast={toast}
             onLogout={()=>{setMode(null);setLoaded(false);}}/>
       }
     </>
@@ -1094,45 +1096,51 @@ function OpPrecios({products,saveProducts,showToast}){
 }
 
 // ─── ADMIN APP ────────────────────────────────────────────────────────────────
-function AdminApp({products,saveProducts,showToast,toast,onLogout}){
-  const [tab,setTab]         = useState("dash");
-  const [days,setDays]       = useState([]);
+function AdminApp({products, saveProducts, syncAll, showToast, toast, onLogout}){
+  const [tab,setTab]             = useState("dash");
+  const [days,setDays]           = useState([]);
   const [allSales,setAllSales]   = useState({});
   const [allMermas,setAllMermas] = useState({});
   const [loading,setLoading]     = useState(true);
-  const [lastSync,setLastSync]   = useState(null); // hora del último sync
-  const [syncing,setSyncing]     = useState(false); // spinner en el botón
+  const [lastSync,setLastSync]   = useState(null);
+  const [syncing,setSyncing]     = useState(false);
 
-  // Función de carga — silent=true no muestra spinner (para el autosync)
+  // load: llama syncAll (que baja nube + actualiza products/sales/mermas en App)
+  // luego re-lee el historial completo de días desde localStorage
   const load = useCallback(async(silent=false)=>{
     if(!silent) setLoading(true);
     setSyncing(true);
-    const synced = await db.pull(); // baja nube → localStorage
-    const idx    = db.get("days_index")||[];
-    const allDays= [...new Set([...idx,todayStr()])].sort();
+
+    // Esto baja la nube y actualiza products, sales de hoy, mermas de hoy en el App padre
+    const synced = await syncAll();
+
+    // Ahora re-leer el historial completo desde localStorage (ya actualizado)
+    const idx     = db.get("days_index")||[];
+    const allDays = [...new Set([...idx, todayStr()])].sort();
     setDays(allDays);
-    const sm={},mm={};
+    const sm={}, mm={};
     allDays.forEach(d=>{
-      sm[d]=db.get("sales_"+d)||[];
-      mm[d]=db.get("mermas_"+d)||[];
+      sm[d] = db.get("sales_"+d)||[];
+      mm[d] = db.get("mermas_"+d)||[];
     });
     setAllSales(sm);
     setAllMermas(mm);
+
     if(!silent) setLoading(false);
     setSyncing(false);
     if(synced) setLastSync(new Date());
     return synced;
-  },[]);
+  },[syncAll]);
 
-  // Carga inicial
-  useEffect(()=>{ load(); },[load]);
+  // Carga inicial al entrar como Admin
+  useEffect(()=>{ load(false); },[load]);
 
   // Auto-sincronización cada 30 segundos en background
   useEffect(()=>{
     const cfg = db.getCfg();
-    if(!cfg.binId||!cfg.apiKey) return; // solo si hay nube configurada
+    if(!cfg.binId||!cfg.apiKey) return;
     const interval = setInterval(()=>load(true), 30000);
-    return ()=>clearInterval(interval); // limpiar al desmontar
+    return ()=>clearInterval(interval);
   },[load]);
 
   const refresh = async()=>{
